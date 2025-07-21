@@ -91,7 +91,7 @@ router.get(
   }
 );
 
-export async function sendMessage(clientId, groupIds, postId) {
+export async function sendMessage(clientId, groupId, postId) {
   const url =
     process.env.NODE_ENV === "development"
       ? process.env.MY_AI_ASSISTANT_LOCAL
@@ -101,6 +101,7 @@ export async function sendMessage(clientId, groupIds, postId) {
   await mongoose.connect(process.env.MONGODB_URI);
   const existing = await Session.findOne({ sessionId: clientId });
   const sessionToken = existing?.sessionToken;
+
   wppconnect
     .create({
       session: clientId,
@@ -110,36 +111,25 @@ export async function sendMessage(clientId, groupIds, postId) {
       },
     })
     .then(async (client) => {
-      // Send messages to all groups in parallel
-      const sendMessagesPromises = groupIds.map((groupId) => {
-        if (post.images.length == 0) {
-          client
-            .sendText(groupId, post.description)
-            .then((result) => {
-              console.log(`Message sent to group ${groupId}:`);
-            })
-            .catch((error) => {
-              console.error(
-                `Failed to send message to group ${groupId}:`,
-                error
-              );
-            });
-        } else {
-          client
-            .sendImage(groupId, post.images[9], "post", post.description)
-            .then((result) => {
-              console.log(`Message sent to group ${groupId}:`);
-            })
-            .catch((error) => {
-              console.error(
-                `Failed to send message to group ${groupId}:`,
-                error
-              );
-            });
-        }
-      });
-      // Wait for all messages to be sent
-      await Promise.all(sendMessagesPromises);
+      if (post.images.length == 0) {
+        client
+          .sendText(groupId, post.description)
+          .then((result) => {
+            console.log(`Message sent to group ${groupId}:`);
+          })
+          .catch((error) => {
+            console.error(`Failed to send message to group ${groupId}:`, error);
+          });
+      } else {
+        client
+          .sendImage(groupId, post.images[0], "post", post.description)
+          .then((result) => {
+            console.log(`Message sent to group ${groupId}:`);
+          })
+          .catch((error) => {
+            console.error(`Failed to send message to group ${groupId}:`, error);
+          });
+      }
     })
     .catch((error) => {
       console.error("Failed to create WhatsApp client:", error);
