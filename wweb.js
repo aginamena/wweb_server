@@ -1,5 +1,7 @@
 import express from "express";
 import wppconnect from "@wppconnect-team/wppconnect";
+import { Session } from "./modal.js";
+import mongoose from "mongoose";
 
 export const router = express.Router();
 
@@ -8,17 +10,26 @@ const status = new Map();
 router.get("/create_session/:sessionId", async (req, res) => {
   try {
     const { sessionId } = req.params;
+    await mongoose.connect(process.env.MONGODB_URI);
     wppconnect
       .create({
         session: sessionId,
-        catchQR: (base64Qrimg, asciiQR, attempts, urlCode) => {
+        catchQR: (base64Qrimg) => {
           return res.json({ qrImg: base64Qrimg });
         },
         statusFind: (statusSession, session) => {
           status.set(session, statusSession);
         },
       })
-      .then(() => status.set(sessionId, "session_created"));
+      .then(async (client) => {
+        const sessionToken = await client.getSessionTokenBrowser();
+        await Session.updateOne(
+          { sessionId },
+          { $set: { sessionToken } },
+          { upsert: true }
+        );
+        status.set(sessionId, "session_created");
+      });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Failed to create session" });
@@ -41,10 +52,14 @@ router.get(
   async (req, res) => {
     try {
       const { sessionId } = req.params;
+      await mongoose.connect(process.env.MONGODB_URI);
+      const existing = await Session.findOne({ sessionId });
+      const sessionToken = existing?.sessionToken;
       wppconnect
         .create({
           session: sessionId,
-          catchQR: (base64Qrimg) => {
+          sessionToken,
+          catchQR: () => {
             return res.json({ status: "you have to re-authenticate" });
           },
           statusFind: (statusSession, session) => {
@@ -77,27 +92,52 @@ router.get(
 );
 
 export async function sendMessage(clientId, groupIds, postId) {
-  const req = await fetch(`http://localhost:3000/api/posts/${postId}`);
+  const url =
+    process.env.NODE_ENV === "development"
+      ? process.env.MY_AI_ASSISTANT_LOCAL
+      : process.env.MY_AI_ASSISTANT_LIVE;
+  const req = await fetch(`${url}/api/posts/${postId}`);
   const post = await req.json();
+  await mongoose.connect(process.env.MONGODB_URI);
+  const existing = await Session.findOne({ sessionId: clientId });
+  const sessionToken = existing?.sessionToken;
   wppconnect
     .create({
       session: clientId,
+      sessionToken,
       statusFind: (statusSession, session) => {
         console.log({ statusSession, session });
       },
     })
     .then(async (client) => {
       // Send messages to all groups in parallel
-      const sendMessagesPromises = groupIds.map((groupId) =>
-        client
-          .sendText(groupId, post.description)
-          .then((result) => {
-            console.log(`Message sent to group ${groupId}:`);
-          })
-          .catch((error) => {
-            console.error(`Failed to send message to group ${groupId}:`, error);
-          })
-      );
+      const sendMessagesPromises = groupIds.map((groupId) => {
+        if (post.images.length == 0) {
+          client
+            .sendText(groupId, post.description)
+            .then((result) => {
+              console.log(`Message sent to group ${groupId}:`);
+            })
+            .catch((error) => {
+              console.error(
+                `Failed to send message to group ${groupId}:`,
+                error
+              );
+            });
+        } else {
+          client
+            .sendImage(groupId, post.images[9], "post", post.description)
+            .then((result) => {
+              console.log(`Message sent to group ${groupId}:`);
+            })
+            .catch((error) => {
+              console.error(
+                `Failed to send message to group ${groupId}:`,
+                error
+              );
+            });
+        }
+      });
       // Wait for all messages to be sent
       await Promise.all(sendMessagesPromises);
     })
