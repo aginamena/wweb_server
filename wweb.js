@@ -7,7 +7,7 @@ const map = new Map();
 
 const client_server =
   process.env.NODE_ENV === "development"
-    ? process.env.MY_AI_ASSISTANT_LOCAL
+    ? "http://localhost:3000"
     : process.env.MY_AI_ASSISTANT_LIVE;
 
 function getClient(clientId) {
