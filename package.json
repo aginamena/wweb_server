@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "dev" : "nodemon index",
     "start": "node index"
   },
   "keywords": [],
@@ -12,16 +13,15 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@wppconnect-team/wppconnect": "^1.37.3",
     "agenda": "^5.0.0",
     "agendash": "^4.0.0",
     "body-parser": "^2.2.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.0",
     "express": "^5.1.0",
-    "luxon": "^3.7.1",
     "mongoose": "^8.16.4",
-    "puppeteer": "^24.14.0"
+    "whatsapp-web.js": "^1.31.0",
+    "wwebjs-mongo": "^1.1.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"

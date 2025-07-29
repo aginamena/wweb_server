@@ -1,137 +1,148 @@
 import express from "express";
-import wppconnect from "@wppconnect-team/wppconnect";
-import { Session } from "./modal.js";
-import mongoose from "mongoose";
-
 export const router = express.Router();
+import wweb from "whatsapp-web.js";
 
-const status = new Map();
+const { Client, LocalAuth, MessageMedia } = wweb;
+const map = new Map();
 
-router.get("/create_session/:sessionId", async (req, res) => {
+const client_server =
+  process.env.NODE_ENV === "development"
+    ? process.env.MY_AI_ASSISTANT_LOCAL
+    : process.env.MY_AI_ASSISTANT_LIVE;
+
+function getClient(clientId) {
+  const client = new Client({
+    puppeteer: {
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    },
+    authStrategy: new LocalAuth({
+      clientId,
+    }),
+  });
+  return client;
+}
+
+router.get("/connect-to-whatsapp/:clientId", async (req, res) => {
+  const { clientId } = req.params;
   try {
-    const { sessionId } = req.params;
-    await mongoose.connect(process.env.MONGODB_URI);
-    wppconnect
-      .create({
-        session: sessionId,
-        catchQR: (base64Qrimg) => {
-          return res.json({ qrImg: base64Qrimg });
-        },
-        statusFind: (statusSession, session) => {
-          status.set(session, statusSession);
-        },
-      })
-      .then(async (client) => {
-        const sessionToken = await client.getSessionTokenBrowser();
-        await Session.updateOne(
-          { sessionId },
-          { $set: { sessionToken } },
-          { upsert: true }
-        );
-        status.set(sessionId, "session_created");
-      });
+    const client = getClient(clientId);
+    client.on("qr", (qr) => {
+      return res.json({ qrImg: qr });
+    });
+    client.on("ready", async () => {
+      console.log(`client is ready`);
+      map.set(clientId, "client_ready");
+    });
+    client.on("authenticated", () => {
+      console.log(`Client ${clientId} authenticated`);
+      map.set(clientId, "client_authenticated");
+    });
+
+    client.initialize();
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Failed to create session" });
+    console.error("Failed to connect to WhatsApp:", error);
+    return res.status(500).json({ error: "Failed to connect to WhatsApp" });
   }
 });
 
-router.get("/client_status/:sessionId", (req, res) => {
-  const { sessionId } = req.params;
+router.get("/is-connected/:clientId", (req, res) => {
+  const { clientId } = req.params;
   try {
-    const clientStatus = status.has(sessionId) ? status.get(sessionId) : "";
+    const clientStatus = map.has(clientId) ? map.get(clientId) : "";
     return res.json({ status: clientStatus });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Failed to fetch client status" });
+    return res.status(500).json({ error: "Failed to fetch client status" });
   }
 });
 
-router.get(
-  "/all_whatsapp_groups_client_is_part_of/:sessionId",
-  async (req, res) => {
-    try {
-      const { sessionId } = req.params;
-      await mongoose.connect(process.env.MONGODB_URI);
-      const existing = await Session.findOne({ sessionId });
-      const sessionToken = existing?.sessionToken;
-      wppconnect
-        .create({
-          session: sessionId,
-          sessionToken,
-          catchQR: () => {
-            return res.json({ status: "you have to re-authenticate" });
-          },
-          statusFind: (statusSession, session) => {
-            console.log({ statusSession, session });
-          },
-        })
-        .then(async (client) => {
-          const groupChats = await client.listChats({ onlyGroups: true });
+router.get("/client-status/:clientId", (req, res) => {
+  const { clientId } = req.params;
+  const client = getClient(clientId);
+  client.on("qr", () => {
+    console.log(`${clientId} has to scan qrcode`);
+  });
+  client.on("ready", () => {
+    console.log(`${clientId} is ready to send messages`);
+  });
+  client.on("disconnected", (msg) => {
+    console.log(`${clientId} is disconnected with message ${msg}`);
+  });
+  client.on("auth_failure", (msg) => {
+    console.log(`${clientId} authentication failure with message ${msg}`);
+  });
+  client.on("authenticated", () => {
+    console.log(`${clientId} is authenticated`);
+  });
+  client.initialize();
+});
 
-          const enrichedGroupChats = await Promise.all(
-            groupChats.map(async (groupChat) => {
-              const chat = {
-                id: groupChat.id._serialized,
-                name: groupChat.name,
-              };
-              const profilePic = await client.getProfilePicFromServer(chat.id);
-              chat.profilePicture = profilePic.img;
-              return chat;
-            })
-          );
-          return res.json({ groupChats: enrichedGroupChats });
-        });
-    } catch (error) {
-      console.error("Error occurred:", error);
-      return res
-        .status(500)
-        .json({ error: "An error occurred while fetching group chats." });
-    }
-  }
-);
-
-export async function sendMessage(clientId, groupId, postId) {
-  const url =
-    process.env.NODE_ENV === "development"
-      ? process.env.MY_AI_ASSISTANT_LOCAL
-      : process.env.MY_AI_ASSISTANT_LIVE;
-  const req = await fetch(`${url}/api/posts/${postId}`);
-  const post = await req.json();
-  await mongoose.connect(process.env.MONGODB_URI);
-  const existing = await Session.findOne({ sessionId: clientId });
-  const sessionToken = existing?.sessionToken;
-
-  wppconnect
-    .create({
-      session: clientId,
-      sessionToken,
-      statusFind: (statusSession, session) => {
-        console.log({ statusSession, session });
-      },
-    })
-    .then(async (client) => {
-      if (post.images.length == 0) {
-        client
-          .sendText(groupId, post.description)
-          .then((result) => {
-            console.log(`Message sent to group ${groupId}:`);
-          })
-          .catch((error) => {
-            console.error(`Failed to send message to group ${groupId}:`, error);
-          });
-      } else {
-        client
-          .sendImage(groupId, post.images[0], "post", post.description)
-          .then((result) => {
-            console.log(`Message sent to group ${groupId}:`);
-          })
-          .catch((error) => {
-            console.error(`Failed to send message to group ${groupId}:`, error);
-          });
-      }
-    })
-    .catch((error) => {
-      console.error("Failed to create WhatsApp client:", error);
+router.get("/all-groups/:clientId", async (req, res) => {
+  const { clientId } = req.params;
+  try {
+    const client = getClient(clientId);
+    client.on("ready", async () => {
+      const chats = await client.getChats();
+      const groupChats = await Promise.all(
+        chats
+          .filter((chat) => chat.isGroup)
+          .map(async (groupChat) => ({
+            id: groupChat.id._serialized,
+            name: groupChat.name,
+            profilePicture: await client.getProfilePicUrl(
+              groupChat.id._serialized
+            ),
+          }))
+      );
+      // console.log("Group chats:", groupChats);
+      return res.json({ groupChats });
     });
+
+    client.on("qr", (qr) => {
+      console.log("scan qrcode again");
+    });
+    client.on("authenticated", () => {
+      console.log(`Client ${clientId} authenticated`);
+    });
+    client.initialize();
+  } catch (error) {
+    console.error("Error occurred:", error);
+    return res
+      .status(500)
+      .json({ error: "An error occurred while fetching group chats." });
+  }
+});
+
+export async function sendMessage(postId) {
+  const post = await (
+    await fetch(`${client_server}/api/posts/${postId}`)
+  ).json();
+  const client = getClient(post.clientId);
+  client.on("qr", (qr) => {
+    console.log("scan qrcode again");
+  });
+  client.on("ready", async () => {
+    if (post.images.length > 0) {
+      const mediaArray = await Promise.all(
+        post.images.map((url) => MessageMedia.fromUrl(url))
+      );
+
+      for (const groupChat of post.groupChats) {
+        // Send first image with caption
+        await client.sendMessage(groupChat.id, mediaArray[0], {
+          caption: post.description,
+        });
+
+        // Send remaining images without caption
+        for (let i = 1; i < mediaArray.length; i++) {
+          await client.sendMessage(groupChat.id, mediaArray[i]);
+        }
+      }
+    } else {
+      for (const groupChat of post.groupChats) {
+        await client.sendMessage(groupChat.id, post.description);
+      }
+    }
+  });
+  client.initialize();
 }
