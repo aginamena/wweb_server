@@ -1,8 +1,11 @@
 import express from "express";
-export const router = express.Router();
+import mongoose from "mongoose";
 import wweb from "whatsapp-web.js";
+import { MongoStore } from "wwebjs-mongo";
 
-const { Client, LocalAuth, MessageMedia } = wweb;
+export const router = express.Router();
+
+const { Client, RemoteAuth, MessageMedia } = wweb;
 const map = new Map();
 
 const client_server =
@@ -10,13 +13,17 @@ const client_server =
     ? "http://localhost:3000"
     : process.env.MY_AI_ASSISTANT_LIVE;
 
-function getClient(clientId) {
+async function getClient(clientId) {
+  await mongoose.connect(process.env.MONGODB_URI);
+  const store = new MongoStore({ mongoose: mongoose });
   const client = new Client({
     puppeteer: {
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     },
-    authStrategy: new LocalAuth({
+    authStrategy: new RemoteAuth({
       clientId,
+      store,
+      backupSyncIntervalMs: 300000,
     }),
   });
   return client;
@@ -25,13 +32,16 @@ function getClient(clientId) {
 router.get("/connect-to-whatsapp/:clientId", async (req, res) => {
   const { clientId } = req.params;
   try {
-    const client = getClient(clientId);
+    const client = await getClient(clientId);
     client.on("qr", (qr) => {
       return res.json({ qrImg: qr });
     });
+    client.on("remote_session_saved", () => {
+      console.log("session saved to DB");
+    });
     client.on("ready", async () => {
-      console.log(`client is ready`);
       map.set(clientId, "client_ready");
+      console.log(`client is ready`);
     });
     client.on("authenticated", () => {
       console.log(`Client ${clientId} authenticated`);
@@ -56,32 +66,33 @@ router.get("/is-connected/:clientId", (req, res) => {
   }
 });
 
-router.get("/client-status/:clientId", (req, res) => {
-  const { clientId } = req.params;
-  const client = getClient(clientId);
-  client.on("qr", () => {
-    console.log(`${clientId} has to scan qrcode`);
-  });
-  client.on("ready", () => {
-    console.log(`${clientId} is ready to send messages`);
-  });
-  client.on("disconnected", (msg) => {
-    console.log(`${clientId} is disconnected with message ${msg}`);
-  });
-  client.on("auth_failure", (msg) => {
-    console.log(`${clientId} authentication failure with message ${msg}`);
-  });
-  client.on("authenticated", () => {
-    console.log(`${clientId} is authenticated`);
-  });
-  client.initialize();
-});
+// router.get("/client-status/:clientId", async (req, res) => {
+//   const { clientId } = req.params;
+//   const client = await getClient(clientId);
+//   client.on("qr", () => {
+//     console.log(`${clientId} has to scan qrcode`);
+//   });
+//   client.on("ready", () => {
+//     console.log(`${clientId} is ready to send messages`);
+//   });
+//   client.on("disconnected", (msg) => {
+//     console.log(`${clientId} is disconnected with message ${msg}`);
+//   });
+//   client.on("auth_failure", (msg) => {
+//     console.log(`${clientId} authentication failure with message ${msg}`);
+//   });
+//   client.on("authenticated", () => {
+//     console.log(`${clientId} is authenticated`);
+//   });
+//   client.initialize();
+// });
 
 router.get("/all-groups/:clientId", async (req, res) => {
   const { clientId } = req.params;
   try {
-    const client = getClient(clientId);
+    const client = await getClient(clientId);
     client.on("ready", async () => {
+      console.log(`getting groupchats for ${clientId}`);
       const chats = await client.getChats();
       const groupChats = await Promise.all(
         chats
@@ -97,9 +108,11 @@ router.get("/all-groups/:clientId", async (req, res) => {
       // console.log("Group chats:", groupChats);
       return res.json({ groupChats });
     });
-
+    client.on("auth_failure", (msg) => {
+      console.log(`${clientId} authentication failed with message ${msg}`);
+    });
     client.on("qr", (qr) => {
-      console.log("scan qrcode again");
+      console.log(`${clientId} has to scan qrcode again`);
     });
     client.on("authenticated", () => {
       console.log(`Client ${clientId} authenticated`);
@@ -117,7 +130,7 @@ export async function sendMessage(postId) {
   const post = await (
     await fetch(`${client_server}/api/posts/${postId}`)
   ).json();
-  const client = getClient(post.clientId);
+  const client = await getClient(post.clientId);
   client.on("qr", (qr) => {
     console.log("scan qrcode again");
   });
